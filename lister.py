@@ -16,15 +16,19 @@ def downloadList(username, password, since=""):
         since = str(getLastStoredProj())
     sess = requests.session()
 
-    startTime = time.gmtime()
+    #startTime = time.gmtime()
     nextLink = "https://api.github.com/repositories?since="+since
     response = sess.get(nextLink, auth=(username, password))
+    while response.status_code == 401:
+        print(response)
+        password = getpass.getpass()
+        response = sess.get(nextLink, auth=(username, password))
     print(nextLink)
     storeProject(response.content.decode("utf-8"))
     nextLink = response.links["next"]['url']
     i = 0
     while response.headers['link'] is not None:
-        responseWait(response)
+        #responseWait(response)
         retryCount = 0
         while retryCount < 10:
             try:
