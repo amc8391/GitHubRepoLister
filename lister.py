@@ -57,6 +57,8 @@ def getLastStoredProj():
     result = cur.fetchone()
     return result[0]
 
+#TODO replace execute with executemany
+#https://docs.python.org/2/library/sqlite3.html#sqlite3.Cursor.executemany
 def storeProject(segment):
     global connection
     jTree = json.loads(segment)
