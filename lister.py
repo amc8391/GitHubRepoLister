@@ -1,54 +1,61 @@
-import requests
 import json
 import sys
 import time
 import sqlite3
 import getpass
+from timeit import default_timer as timer
 
-PROJECTS_FILE = 'projectList.json'
+import requests
+
 MAX_REQ_PER_HOUR = 5000
 connection = None
 
+
 def downloadList(username, password, since=""):
-    #CURRENT MAX VALUE OF SINCE: https://api.github.com/repositories?since=44257649
+    # CURRENT MAX VALUE OF SINCE: https://api.github.com/repositories?since=44257649
     setupDatabase()
     if since == "":
         since = str(getLastStoredProj())
     sess = requests.session()
 
-    #startTime = time.gmtime()
-    nextLink = "https://api.github.com/repositories?since="+since
-    response = sess.get(nextLink, auth=(username, password))
+    start_time = timer()
+    next_link = "https://api.github.com/repositories?since=" + since
+    response = sess.get(next_link, auth=(username, password))
+    responseWait(response)
     while response.status_code == 401:
         print(response)
         password = getpass.getpass()
-        response = sess.get(nextLink, auth=(username, password))
-    print(nextLink)
+        response = sess.get(next_link, auth=(username, password))
+    print(next_link)
     storeProject(response.content.decode("utf-8"))
-    nextLink = response.links["next"]['url']
+    next_link = response.links["next"]['url']
     i = 0
     while response.headers['link'] is not None:
-        #responseWait(response)
-        retryCount = 0
-        while retryCount < 10:
+        responseWait(response)
+        retry_count = 0
+        while retry_count < 10:
             try:
-                response = sess.get(nextLink, auth=(username, password))
+                response = sess.get(next_link, auth=(username, password))
                 break
+            # TODO get rid of this retry and add real error handling
             except:
-                retryCount += 1
+                retry_count += 1
 
-        print(nextLink + " " + response.headers["X-RateLimit-Remaining"] + " requests remaining")
+        print(next_link + " " + response.headers["X-RateLimit-Remaining"] + " requests remaining")
         i += storeProject(response.content.decode("utf-8"))
-        nextLink = response.links["next"]['url']
-        if i % 1000 == 0:
-            pass
-            #print(str(i) + "projects processed in " + str(time.gmtime()-startTime))
+        next_link = response.links["next"]['url']
+        elapsed_time = timer() - start_time
+        print(str(i) + " projects processed in " + str(elapsed_time) + " seconds")
+        print("rate: " + str(i / elapsed_time) + " repos/second")
+
 
 def setupDatabase():
     global connection
     connection = sqlite3.connect("githubData.db")
-    connection.cursor().execute("CREATE TABLE IF NOT EXISTS repos (id INTEGER PRIMARY KEY, proj_id INTEGER, name TEXT, owner_name TEXT, description TEXT)")
+    cmd = "CREATE TABLE IF NOT EXISTS repos (id INTEGER PRIMARY KEY, proj_id INTEGER, name TEXT, owner_name TEXT, description TEXT)"
+    connection.cursor().execute(cmd)
     connection.commit()
+
 
 def getLastStoredProj():
     global connection
@@ -57,61 +64,59 @@ def getLastStoredProj():
     result = cur.fetchone()
     return result[0]
 
-#TODO replace execute with executemany
-#https://docs.python.org/2/library/sqlite3.html#sqlite3.Cursor.executemany
+
+# https://docs.python.org/2/library/sqlite3.html#sqlite3.Cursor.executemany
 def storeProject(segment):
     global connection
-    jTree = json.loads(segment)
+    j_tree = json.loads(segment)
     i = 0
-    for proj in jTree:
-        projID = proj["id"]
-        projName = proj["name"]
-        projOwner = proj["owner"]["login"]
+    proj_tuples = []
+    for proj in j_tree:
+        proj_id = proj["id"]
+        proj_name = proj["name"]
+        proj_owner = proj["owner"]["login"]
         descrip = proj["description"]
-        cmd = "INSERT INTO repos (proj_id, name, owner_name, description) VALUES(?, ?, ?, ?)"
-        connection.cursor().execute(cmd, (int(projID), str(projName), str(projOwner), str(descrip)))
-        connection.commit()
+        proj_tuples.append((proj_id, proj_name, proj_owner, descrip))
         i += 1
-        print(".", end="", flush=True)
+
+    cmd = "INSERT INTO repos (proj_id, name, owner_name, description) VALUES(?, ?, ?, ?)"
+    connection.cursor().executemany(cmd, proj_tuples)
+    connection.commit()
     print("")
     return i
-    #f=open('projectList.json', 'a', encoding="utf-8")
-    #f.write(segment)
-    #f.write("\n")
-    #f.close()
+
 
 def getRateLimitStatus(username=None, password=None):
-    sess = requests.session()
-    response = None
-    if not username is None:
+    if username is not None:
         response = requests.get("https://api.github.com/rate_limit", auth=(username, password))
     else:
         response = requests.get("https://api.github.com/rate_limit")
     return response
 
+
 def responseWait(response):
-    remainingRequests = int(response.headers["X-RateLimit-Remaining"])
-    nextReqPeriod = int(response.headers["X-RateLimit-Reset"])
-    #periodLimit = int(response.headers["X-RateLimit-Limit"])
-    #stop requesting and wait until next request period to avoid exceptions
-    if remainingRequests < 5:
-        print("Remaining requests: " + remainingRequests)
-        while time.gmtime() < nextReqPeriod:
-            print("Waiting for next request period at " + time.gmtime(nextReqPeriod))
+    remaining_requests = int(response.headers["X-RateLimit-Remaining"])
+    next_request_period = int(response.headers["X-RateLimit-Reset"])
+    # periodLimit = int(response.headers["X-RateLimit-Limit"])
+    # stop requesting and wait until next request period to avoid exceptions
+    if remaining_requests < 5:
+        print("Remaining requests: " + str(remaining_requests))
+        while int(time.time()) < next_request_period:
+            print("Waiting for next request period at " + str(time.gmtime(next_request_period).tm_hour) + ":" + str(
+                time.gmtime(next_request_period).tm_min))
             time.sleep(15)
-    time.sleep(60*60/MAX_REQ_PER_HOUR) #Should work to auto-limit 5000 requests/hr
+            # time.sleep(next_request_period - time.time()) #no user feedback, but better(?)
+
 
 def main():
-
-    if len(sys.argv)==3:
-        downloadList(sys.argv[1], getpass.getpass(), sys.argv[2])
-    elif len(sys.argv)==2:
-        downloadList(sys.argv[1], getpass.getpass())
+    if len(sys.argv) > 1:
+        username = sys.argv[1]
     else:
         print("Usage: lister.py username [startPage]")
-    f=open('projectList.json', 'r')
-    jsonTree = json.loads(f.readlines())
-    for proj in jsonTree:
-        print(proj['name'])
+        username = str(input("Enter your username"))
+
+    downloadList(username, getpass.getpass())
+    # TODO do something cool with this data
+
 
 main()
